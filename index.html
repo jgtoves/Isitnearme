@@ -1,103 +1,29 @@
-const wigleData = new Map(); // Store as { "MAC": {lat, lon, ssid} }
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP8266 Wi-Fi Radar</title>
+    <style>
+        body { font-family: sans-serif; background: #121212; color: #0f0; text-align: center; padding: 20px; }
+        #radar { position: relative; width: 300px; height: 300px; border: 2px solid #0f0; border-radius: 50%; margin: 20px auto; background: radial-gradient(circle, #1a331a 0%, #000 70%); }
+        #needle { position: absolute; top: 50%; left: 50%; width: 4px; height: 140px; background: red; transform-origin: bottom center; transform: translate(-50%, -100%) rotate(0deg); transition: transform 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275); box-shadow: 0 0 15px red; border-radius: 2px; }
+        .grid { position: absolute; top: 50%; left: 50%; width: 100%; height: 100%; transform: translate(-50%, -50%); border-radius: 50%; border: 1px solid rgba(0,255,0,0.2); pointer-events: none; }
+        .controls { background: #222; padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #444; }
+        button { background: #0f0; color: #000; border: none; padding: 10px 20px; font-weight: bold; border-radius: 5px; cursor: pointer; margin: 5px; }
+        #log { font-size: 0.8em; color: #888; height: 100px; overflow-y: scroll; text-align: left; background: #000; padding: 10px; }
+    </style>
+</head>
+<body>
 
-function parseWigleCSV(file) {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        const lines = e.target.result.split('\n');
-        // WiGle CSVs usually start with headers on line 2
-        for (let i = 2; i < lines.length; i++) {
-            const cols = lines[i].split(',');
-            if (cols.length < 10) continue;
+    <h2>Wi-Fi Shadow Radar</h2>
+    
+    <div class="controls">
+        <button onclick="connectSerial()">1. Connect ESP8266</button>
+        <input type="file" id="wigleFile" style="display:none" onchange="parseWigle(this)">
+        <button onclick="document.getElementById('wigleFile').click()">2. Load WiGle CSV</button>
+        <div id="status">Status: Waiting for input...</div>
+    </div>
 
-            const mac = cols[0].trim(); // BSSID
-            const ssid = cols[1].trim();
-            const lat = parseFloat(cols[3]);
-            const lon = parseFloat(cols[4]);
-
-            wigleData.set(mac, { lat, lon, ssid });
-        }
-        console.log(`Loaded ${wigleData.size} networks from WiGle.`);
-    };
-    reader.readAsText(file);
-}
-
-
-
-let port;
-let reader;
-const networkMap = new Map(); // Stores { BSSID: { ssid, rssiHistory, baseline } }
-const DROP_THRESHOLD = 8;     // Sensitivity: dBm drop to trigger alert
-
-async function connectSerial() {
-    try {
-        // Request a port and open it
-        port = await navigator.serial.requestPort();
-        await port.open({ baudRate: 115200 });
-        
-        const textDecoder = new TextDecoderStream();
-        const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
-        reader = textDecoder.readable.getReader();
-
-        readLoop();
-    } catch (e) {
-        console.error("Serial Connection Failed:", e);
-    }
-}
-
-async function readLoop() {
-    let buffer = "";
-    while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += value;
-        
-        if (buffer.includes("\n")) {
-            let lines = buffer.split("\n");
-            buffer = lines.pop(); // Keep partial line for next loop
-            lines.forEach(parseLine);
-        }
-    }
-}
-
-function parseLine(line) {
-    // Expected format from ESP8266: "XX:XX:XX:XX:XX:XX,SSID,-65"
-    const data = line.split(",");
-    if (data.length < 3) return;
-
-    const bssid = data[0].trim();
-    const ssid = data[1].trim();
-    const rssi = parseInt(data[2]);
-
-    if (!networkMap.has(bssid)) {
-        networkMap.set(bssid, { ssid, baseline: rssi, current: rssi });
-    } else {
-        let net = networkMap.get(bssid);
-        // Simple smoothing: 80% old, 20% new
-        net.baseline = (net.baseline * 0.8) + (rssi * 0.2);
-        
-        // Detect "Shadowing" (The Person)
-        const drop = net.baseline - rssi;
-        if (drop > DROP_THRESHOLD) {
-            triggerAlert(bssid, ssid, drop);
-        }
-        net.current = rssi;
-    }
-}
-
-
-        function calculateBearing(lat1, lon1, lat2, lon2) {
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
-    const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
-              Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon);
-    let brng = Math.atan2(y, x) * 180 / Math.PI;
-    return (brng + 360) % 360; // Normalize to 0-360
-}
-
-// Rotate the UI arrow based on Phone Orientation
-window.addEventListener("deviceorientationabsolute", (event) => {
-    const heading = event.alpha; // Magnetic North
-    const arrow = document.getElementById("compass-arrow");
-    // targetBearing comes from the WiGle correlation
-    arrow.style.transform = `rotate(${targetBearing - heading}deg)`;
-});
+    <div id="radar">
+        <div class="grid"
