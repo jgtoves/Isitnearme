@@ -1,3 +1,28 @@
+const wigleData = new Map(); // Store as { "MAC": {lat, lon, ssid} }
+
+function parseWigleCSV(file) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const lines = e.target.result.split('\n');
+        // WiGle CSVs usually start with headers on line 2
+        for (let i = 2; i < lines.length; i++) {
+            const cols = lines[i].split(',');
+            if (cols.length < 10) continue;
+
+            const mac = cols[0].trim(); // BSSID
+            const ssid = cols[1].trim();
+            const lat = parseFloat(cols[3]);
+            const lon = parseFloat(cols[4]);
+
+            wigleData.set(mac, { lat, lon, ssid });
+        }
+        console.log(`Loaded ${wigleData.size} networks from WiGle.`);
+    };
+    reader.readAsText(file);
+}
+
+
+
 let port;
 let reader;
 const networkMap = new Map(); // Stores { BSSID: { ssid, rssiHistory, baseline } }
@@ -58,3 +83,21 @@ function parseLine(line) {
         net.current = rssi;
     }
 }
+
+
+        function calculateBearing(lat1, lon1, lat2, lon2) {
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
+    const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
+              Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon);
+    let brng = Math.atan2(y, x) * 180 / Math.PI;
+    return (brng + 360) % 360; // Normalize to 0-360
+}
+
+// Rotate the UI arrow based on Phone Orientation
+window.addEventListener("deviceorientationabsolute", (event) => {
+    const heading = event.alpha; // Magnetic North
+    const arrow = document.getElementById("compass-arrow");
+    // targetBearing comes from the WiGle correlation
+    arrow.style.transform = `rotate(${targetBearing - heading}deg)`;
+});
