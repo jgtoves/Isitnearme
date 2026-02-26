@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ESP8266 Wi-Fi Radar</title>
     <style>
-        body { font-family: sans-serif; background: #121212; color: #2065A8; text-align: center; padding: 20px; }
-        #radar { position: relative; width: 300px; height: 300px; border: 2px solid #0f0; border-radius: 50%; margin: 20px auto; background: radial-gradient(circle, #1a331a 0%, #000 70%); }
-        #needle { position: absolute; top: 50%; left: 50%; width: 4px; height: 140px; background: red; transform-origin: bottom center; transform: translate(-50%, -100%) rotate(0deg); transition: transform 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275); box-shadow: 0 0 15px red; border-radius: 2px; }
-        .grid { position: absolute; top: 50%; left: 50%; width: 100%; height: 100%; transform: translate(-50%, -50%); border-radius: 50%; border: 1px solid rgba(0,255,0,0.2); pointer-events: none; }
+        body { font-family: sans-serif; background: #121212; color: #0f0; text-align: center; padding: 20px; }
+        #radar { position: relative; width: 300px; height: 300px; border: 2px solid #0f0; border-radius: 50%; margin: 20px auto; background: radial-gradient(circle, #1a331a 0%, #000 70%); overflow: hidden;}
+        #needle { position: absolute; top: 50%; left: 50%; width: 4px; height: 140px; background: red; transform-origin: bottom center; transform: translate(-50%, -100%) rotate(0deg); transition: transform 0.5s ease-out; box-shadow: 0 0 15px red; border-radius: 2px; z-index: 10; }
+        .grid { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); border-radius: 50%; border: 1px solid rgba(0,255,0,0.2); pointer-events: none; }
         .controls { background: #222; padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #444; }
         button { background: #0f0; color: #000; border: none; padding: 10px 20px; font-weight: bold; border-radius: 5px; cursor: pointer; margin: 5px; }
-        #log { font-size: 0.8em; color: #888; height: 100px; overflow-y: scroll; text-align: left; background: #000; padding: 10px; }
+        #log { font-size: 0.8em; color: #888; height: 120px; overflow-y: scroll; text-align: left; background: #000; padding: 10px; border: 1px solid #333; margin-top: 10px; }
     </style>
 </head>
 <body>
@@ -21,20 +20,147 @@
     
     <div class="controls">
         <button onclick="connectSerial()">1. Connect ESP8266</button>
-        <input type="file" id="wigleFile" style="display:none" onchange="parseWigle(this)">
+        <input type="file" id="wigleFile" style="display:none" onchange="parseWigleCSV(this.files[0])">
         <button onclick="document.getElementById('wigleFile').click()">2. Load WiGle CSV</button>
-        <div id="status">Status: Waiting for input...</div>
+        <button onclick="resetBaselines()" style="background:#ff9800;">3. Calibrate (Clear Room)</button>
+        <div id="status">Status: Offline</div>
     </div>
 
     <div id="radar">
-        <div class="grid"
-            </html>
+        <div class="grid" style="width: 90%; height: 90%;"></div>
+        <div class="grid" style="width: 60%; height: 60%;"></div>
+        <div class="grid" style="width: 30%; height: 30%;"></div>
+        <div id="needle"></div>
+        <div style="position: absolute; top: 10px; left: 50%; transform: translateX(-50%); font-weight: bold;">N</div>
+    </div>
 
-            <script>
-const wigleData = new Map(); // Store as { "MAC": {lat, lon, ssid} }
+    <div id="log">Logs: Please connect device...</div>
 
-function parseWigleCSV(file) {
-    const reader = new FileReader();
+    <script>
+        const wigleData = new Map();
+        const networkBaselines = new Map();
+        let userLat, userLon, userHeading = 0;
+        let targetBearing = 0;
+        const DROP_THRESHOLD = 8; // Adjust based on environment
+
+        // --- SENSORS ---
+        window.addEventListener('deviceorientationabsolute', e => {
+            userHeading = e.alpha || 0;
+            updateNeedle();
+        });
+
+        navigator.geolocation.watchPosition(pos => {
+            userLat = pos.coords.latitude;
+            userLon = pos.coords.longitude;
+            log(`GPS: ${userLat.toFixed(5)}, ${userLon.toFixed(5)}`);
+        }, err => log("GPS Error: " + err.message));
+
+        // --- WiGle PARSER ---
+        function parseWigleCSV(file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const lines = e.target.result.split('\n');
+                let count = 0;
+                for (let i = 2; i < lines.length; i++) {
+                    const cols = lines[i].split(',');
+                    if (cols.length < 5) continue;
+                    const mac = cols[0].trim().toLowerCase();
+                    wigleData.set(mac, { 
+                        ssid: cols[1], 
+                        lat: parseFloat(cols[3]), 
+                        lon: parseFloat(cols[4]) 
+                    });
+                    count++;
+                }
+                log(`WiGle Loaded: ${count} networks.`);
+                document.getElementById('status').innerText = "WiGle Ready";
+            };
+            reader.readAsText(file);
+        }
+
+        function resetBaselines() {
+            networkBaselines.clear();
+            log("Baselines reset. Please leave the room for calibration.");
+        }
+
+        // --- SERIAL CONNECTION ---
+        async function connectSerial() {
+            try {
+                const port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 115200 });
+                document.getElementById('status').innerText = "Connected to ESP8266";
+                log("Serial Connected. Reading stream...");
+                
+                const textDecoder = new TextDecoderStream();
+                port.readable.pipeTo(textDecoder.writable);
+                const reader = textDecoder.readable.getReader();
+                
+                readLoop(reader);
+            } catch (e) {
+                log("Serial Error: " + e);
+            }
+        }
+
+        async function readLoop(reader) {
+            let buffer = "";
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += value;
+                if (buffer.includes('\n')) {
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+                    lines.forEach(processSignal);
+                }
+            }
+        }
+
+        function processSignal(line) {
+            const parts = line.split(',');
+            if (parts.length < 3) return;
+
+            const mac = parts[0].trim().toLowerCase();
+            const ssid = parts[1].trim();
+            const rssi = parseInt(parts[2]);
+
+            if (!networkBaselines.has(mac)) {
+                networkBaselines.set(mac, rssi);
+            } else {
+                let base = networkBaselines.get(mac);
+                let diff = base - rssi;
+
+                if (diff > DROP_THRESHOLD) {
+                    if (wigleData.has(mac)) {
+                        const target = wigleData.get(mac);
+                        targetBearing = calculateBearing(userLat, userLon, target.lat, target.lon);
+                        log(`DETECT: ${ssid} | Drop: ${diff}dBm`);
+                    }
+                }
+                // Slow adjust baseline
+                networkBaselines.set(mac, (base * 0.98) + (rssi * 0.02));
+            }
+        }
+
+        function calculateBearing(lat1, lon1, lat2, lon2) {
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
+            const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
+                      Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon);
+            return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+        }
+
+        function updateNeedle() {
+            const relative = (targetBearing - userHeading + 360) % 360;
+            document.getElementById('needle').style.transform = `translate(-50%, -100%) rotate(${relative}deg)`;
+        }
+
+        function log(msg) {
+            const l = document.getElementById('log');
+            l.innerHTML = msg + "<br>" + l.innerHTML;
+        }
+    </script>
+</body>
+</html>    const reader = new FileReader();
     reader.onload = (e) => {
         const lines = e.target.result.split('\n');
         // WiGle CSVs usually start with headers on line 2
