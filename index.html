@@ -1,0 +1,60 @@
+let port;
+let reader;
+const networkMap = new Map(); // Stores { BSSID: { ssid, rssiHistory, baseline } }
+const DROP_THRESHOLD = 8;     // Sensitivity: dBm drop to trigger alert
+
+async function connectSerial() {
+    try {
+        // Request a port and open it
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+        
+        const textDecoder = new TextDecoderStream();
+        const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+        reader = textDecoder.readable.getReader();
+
+        readLoop();
+    } catch (e) {
+        console.error("Serial Connection Failed:", e);
+    }
+}
+
+async function readLoop() {
+    let buffer = "";
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+        
+        if (buffer.includes("\n")) {
+            let lines = buffer.split("\n");
+            buffer = lines.pop(); // Keep partial line for next loop
+            lines.forEach(parseLine);
+        }
+    }
+}
+
+function parseLine(line) {
+    // Expected format from ESP8266: "XX:XX:XX:XX:XX:XX,SSID,-65"
+    const data = line.split(",");
+    if (data.length < 3) return;
+
+    const bssid = data[0].trim();
+    const ssid = data[1].trim();
+    const rssi = parseInt(data[2]);
+
+    if (!networkMap.has(bssid)) {
+        networkMap.set(bssid, { ssid, baseline: rssi, current: rssi });
+    } else {
+        let net = networkMap.get(bssid);
+        // Simple smoothing: 80% old, 20% new
+        net.baseline = (net.baseline * 0.8) + (rssi * 0.2);
+        
+        // Detect "Shadowing" (The Person)
+        const drop = net.baseline - rssi;
+        if (drop > DROP_THRESHOLD) {
+            triggerAlert(bssid, ssid, drop);
+        }
+        net.current = rssi;
+    }
+}
