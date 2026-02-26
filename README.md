@@ -1,4 +1,4 @@
 # Isitnearme
-Detects people around using Bluetooth, Wifi, and signal summation.  
+Finds direction of people based on probe request RSSI blockage to create wifi radar. Has compass and web interface. 
 
-# Dependencies: pybluez, scapy
+# Dependencies:
